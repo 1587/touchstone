@@ -187,17 +187,28 @@ def _changed_file_coverage(work_dir, test_code, changed_files, changed_lines=Non
             os.remove(tf)
 
 
-# --- 最小变异（高风险）。返回击杀率（LANG RUNNER；生产应换 mutmut/cosmic-ray）--
-# AST 级变异（stdlib ast 真解析，作用于语法节点，不碰注释/字符串；远强于字符串替换）：
-#   关系 Eq<->NotEq / Lt<->GtE / Gt<->LtE，算术 Add<->Sub / Mult<->Div，
-#   布尔 And<->Or，布尔常量 True<->False。每个可变异点产一个变异体。
-# 说明：mutmut(2.x 要求 tests/ 目录、3.x 配置驱动且有状态)均跑"发现到的整套测试"，
-#   与本处"临时 worktree + 仅跑生成的独立验收测试 + 只针对改动文件"不贴合；故 Python 侧
-#   用作用域精确、可在离线验证的 AST 变异。Java 侧用成熟的 PIT(见 MavenRunner)。
+# --- AST 级变异（高风险充分性）。返回击杀率。----------------------------------
+# 对标 mutmut/cosmic-ray 的变异算子集（15 类），但用 stdlib ast 直接实现——
+# 原因：mutmut(2.x 要求 tests/ 目录、3.x 配置驱动且有状态)和 cosmic-ray(需 session 配置)
+# 均跑"发现到的整套测试"，与本处"临时 worktree + 仅跑生成的独立验收测试 + 只针对改动文件"
+# 不贴合——它们是全仓变异工具，Touchstone 需要的是「只变异这次改动的文件、只跑这次生成的
+# 验收测试」的精确作用域。Java 侧用成熟的 PIT（见 MavenRunner）；Python 侧用此 AST 变异。
+#
+# 变异算子（覆盖 mutmut/cosmic-ray 的主流算子）：
+#   比较：Eq↔NotEq / Lt↔GtE / Gt↔LtE / Is↔IsNot / In↔NotIn
+#   算术：Add↔Sub / Mult↔Div / FloorDiv↔Div / Mod↔Mult / Pow↔Mult / LShift↔RShift / BitOr↔BitAnd / BitXor↔BitAnd
+#   布尔：And↔Or
+#   常量：True↔False / int/float ±1
+#   一元：USub↔UAdd / Not→(移除) / Invert→(移除)
 _MUT_CMP = {ast.Eq: ast.NotEq, ast.NotEq: ast.Eq, ast.Lt: ast.GtE,
-            ast.GtE: ast.Lt, ast.Gt: ast.LtE, ast.LtE: ast.Gt}
-_MUT_BIN = {ast.Add: ast.Sub, ast.Sub: ast.Add, ast.Mult: ast.Div, ast.Div: ast.Mult}
+            ast.GtE: ast.Lt, ast.Gt: ast.LtE, ast.LtE: ast.Gt,
+            ast.Is: ast.IsNot, ast.IsNot: ast.Is, ast.In: ast.NotIn, ast.NotIn: ast.In}
+_MUT_BIN = {ast.Add: ast.Sub, ast.Sub: ast.Add, ast.Mult: ast.Div, ast.Div: ast.Mult,
+            ast.FloorDiv: ast.Div, ast.Mod: ast.Mult, ast.Pow: ast.Mult,
+            ast.LShift: ast.RShift, ast.RShift: ast.LShift,
+            ast.BitOr: ast.BitAnd, ast.BitAnd: ast.BitOr, ast.BitXor: ast.BitAnd}
 _MUT_BOOL = {ast.And: ast.Or, ast.Or: ast.And}
+_MUT_UNARY = {ast.USub: ast.UAdd, ast.UAdd: ast.USub, ast.Not: None, ast.Invert: None}
 
 
 def _mutation_sites(tree):
@@ -209,7 +220,11 @@ def _mutation_sites(tree):
             out.append(n)
         elif isinstance(n, ast.BoolOp) and type(n.op) in _MUT_BOOL:
             out.append(n)
+        elif isinstance(n, ast.UnaryOp) and type(n.op) in _MUT_UNARY:
+            out.append(n)
         elif isinstance(n, ast.Constant) and isinstance(n.value, bool):
+            out.append(n)
+        elif isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(n.value, bool):
             out.append(n)
     return out
 
@@ -230,8 +245,18 @@ def _ast_mutants(src):
             node.op = _MUT_BIN[type(node.op)]()
         elif isinstance(node, ast.BoolOp):
             node.op = _MUT_BOOL[type(node.op)]()
+        elif isinstance(node, ast.UnaryOp):
+            new_op = _MUT_UNARY[type(node.op)]
+            if new_op is not None:
+                node.op = new_op()               # USub↔UAdd
+            else:
+                node.op = ast.UAdd() if isinstance(node.operand, ast.Constant) else ast.Not()
+                # Not/Invert → 降为恒等（移除否定）；粗近似——变异测试重在"改了什么"
         elif isinstance(node, ast.Constant):
-            node.value = not node.value
+            if isinstance(node.value, bool):
+                node.value = not node.value       # True↔False
+            elif isinstance(node.value, (int, float)):
+                node.value = node.value + 1 if node.value != 0 else 1  # int/float ±1
         try:
             mutants.append(ast.unparse(ast.fix_missing_locations(tree)))
         except (ValueError, AttributeError):
