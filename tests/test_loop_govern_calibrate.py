@@ -343,7 +343,7 @@ def test_marker_spoofing_by_non_bot_ignored():
     assert calibrate.thread_findings(threads, "github-actions[bot]") == []
 
 
-# ---------------- 测试缺口 P0-6/P0-7：loop 无推进 + govern trip→exit(2) --------
+# ---------------- 测试缺口：loop 无推进 + govern trip→exit(2) -----------------
 def test_loop_escalate_on_no_progress(rule_index):
     """发现集是上轮的超集（加新发现但没解决任何旧的）→ 无推进 → escalate。"""
     st = loop.LoopState(round=1, history=[["OE-001:f:1"]])

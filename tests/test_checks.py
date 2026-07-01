@@ -66,6 +66,13 @@ def test_touchstone_rules_passes_when_clean():
     assert passed is True
 
 
+def test_touchstone_rules_blocks_on_category_contract():
+    """category=contract（即便 severity=warn）也必须阻断——契约类发现走门禁不走建议。"""
+    pr = {"contract_findings": [{"rule_id": "CTR-001", "severity": "warn", "category": "contract"}]}
+    passed, summary = checks._check_touchstone_rules(pr, {})
+    assert passed is False and "CTR-001" in summary
+
+
 # ---------------- 端到端：确定性栈规则进总闸（F1/F3 回归）----------------
 def test_ctr001_reaches_gate_and_blocks(rule_index):
     """CTR-001（破坏性契约变更）经 stack_rules 产出 block_candidate，进总闸 → failure。"""
