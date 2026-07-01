@@ -122,6 +122,18 @@ def test_map_verdict_high_categories_configurable():
     assert risk["risk_band"] == "high"
 
 
+def test_map_verdict_contract_category_path():
+    """contract 类发现 → blast 含 cross_module_contract。
+    注意：contract 不在默认 high_categories → band=mid → cheap_only（当前行为）；
+    高风险升级需配 high_categories 纳入 contract，或改 route() 逻辑。此处锁定现状。"""
+    findings = [{"category": "contract", "confidence": 0.9, "rule_id": "CTR-001",
+                 "agent": "touchstone-rules", "severity": "block_candidate"}]
+    _, risk = RP.map_verdict(findings)
+    assert "cross_module_contract" in risk["blast_radius"]
+    assert risk["risk_band"] == "mid"          # 当前：contract 不在 high_categories
+    assert risk["verification_decision"] == "cheap_only"   # 因 band != high
+
+
 # ---------------- 评审提供器 fetch（注入 vs 子进程集成）----------------
 def test_fetch_with_injected_output():
     items = RP.fetch({"pr_agent_output": _RAW})
