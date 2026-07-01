@@ -1,0 +1,21 @@
+# .gitcode/workflows/ai-review.yml
+name: AI Code Review
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+jobs:
+  review:
+    runs-on: euleros-2.10.1
+    steps:
+      - uses: checkout-action@0.0.1
+      - name: Setup Python
+        uses: setup-python@0.0.1
+        with:
+          python-version: '3.10'
+      - name: Run AI Review
+        run: |
+          cd repo_workspace
+          pip install -r requirements.txt
+          python -m touchstone.ai_commit review-pr
