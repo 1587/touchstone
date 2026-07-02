@@ -72,8 +72,9 @@ def _is_review_type(finding_type):
     return finding_type.startswith("PRA-") or finding_type.startswith("pr-agent")
 
 
-def _exp_id(finding_type, kind):
-    return f"{kind}:{finding_type}"
+def _exp_id(finding_type, kind, repo="", stack=""):
+    # 经验唯一键含 仓·栈：多仓部署下 A 仓与 B 仓的同类型经验不互相覆盖（I1）
+    return f"{kind}:{repo}:{stack}:{finding_type}"
 
 
 def _protected_types():
@@ -109,7 +110,7 @@ def distill_candidates(calib_agg, repo="", stack=""):
                                        f"historically valued (adoption {adopt:.0%} over {fires}).")
         else:
             continue
-        out.append({"id": _exp_id(ftype, kind), "repo": repo, "stack": stack,
+        out.append({"id": _exp_id(ftype, kind, repo, stack), "repo": repo, "stack": stack,
                     "finding_type": ftype, "kind": kind, "text": text,
                     "evidence": {"fires": fires, "adoption": round(adopt, 2)},
                     "status": "candidate", "source": "counting", "locked": False,
@@ -193,11 +194,12 @@ def distill_semantic_advantage(pr, group, llm, repo="", stack=""):
     """③ 组内相对语义优势：把一组带分数的评审交旗舰模型内省——高分挑对了什么、低分挑偏/漏了什么——
     按 仓·栈·发现类型 提炼候选经验。返回与 distill_candidates 同 schema 的 Experience(candidate)；
     只保留 PR-Agent 源类型（确定性 contract 类型永不进经验，坑 2b）。"""
-    ranked = sorted(zip(group["outputs"], group["rewards"]), key=lambda x: -x[1])
+    rewards = group["rewards"]
+    if len(rewards) < 2 or len({round(r, 6) for r in rewards}) < 2:
+        return []                                  # 退化组：组内奖励无差异，对比无意义（I4）
+    ranked = sorted(zip(group["outputs"], rewards), key=lambda x: -x[1])
     payload = {"pr_id": pr.get("pr_id"),
-               "high_reward_reviews": [r for r, _ in ranked[:2]],
-               "low_reward_reviews": [r for r, _ in ranked[-2:]],
-               "rewards": [round(x, 2) for x in group["rewards"]]}
+               "reviews_by_reward": [{"reward": round(rw, 2), "review": rv} for rv, rw in ranked]}
     sys_p = ("Compare the higher-reward reviews against the lower-reward ones for this PR and "
              "distill repo-specific review experience: which finding_type to EMPHASIZE (humans "
              "act on) and which to SUPPRESS (humans dismiss). Respond ONLY as a JSON array of "
@@ -217,9 +219,9 @@ def distill_semantic_advantage(pr, group, llm, repo="", stack=""):
             continue                          # 确定性类型不进经验（固定基准，坑 2b）
         if kind == "suppress" and ftype in protected:
             continue                          # 红线：受保护类型永不 suppress
-        out.append({"id": _exp_id(ftype, kind), "repo": repo, "stack": stack,
+        out.append({"id": _exp_id(ftype, kind, repo, stack), "repo": repo, "stack": stack,
                     "finding_type": ftype, "kind": kind, "text": text.strip(),
-                    "evidence": {"tfgrpo": True, "group_rewards": payload["rewards"],
+                    "evidence": {"tfgrpo": True, "group_rewards": [round(x, 2) for x in rewards],
                                  "pr": pr.get("pr_id")},
                     "status": "candidate", "source": "tfgrpo", "locked": False,
                     "source_prs": [pr.get("pr_id")] if pr.get("pr_id") else [],
@@ -262,9 +264,12 @@ def _distill_via_llm(ground_truth, store, llm=None, *, group_size=TFGRPO_GROUP_S
     rollout = rollout or rollout_reviews
     score = score or score_review
     distill_advantage = distill_advantage or distill_semantic_advantage
-    experience_text = render_injection(store or {"experiences": []})
+    base_active = [e for e in (store or {}).get("experiences", []) if e.get("status") == "active"]
     acc = {}
     for _ in range(max(1, epochs)):
+        # 每轮用「已有 active + 本轮已蒸出候选」重渲染 E，下一轮在更新后的 E 上 rollout（I2）
+        cond = {"experiences": base_active + [dict(c, status="active") for c in acc.values()]}
+        experience_text = render_injection(cond)
         for pr in ground_truth or []:
             reviews = rollout(pr, experience_text, llm, group_size)
             rewards = [score(o, pr.get("human_adopted")) for o in reviews]
@@ -318,7 +323,7 @@ def seed_experience(store, finding_type, kind, text, *, repo="", stack="",
     if kind not in ("emphasize", "suppress"):
         raise ValueError("kind 必须是 emphasize 或 suppress")
     now = int(time.time())
-    exp = {"id": _exp_id(finding_type, kind), "repo": repo, "stack": stack,
+    exp = {"id": _exp_id(finding_type, kind, repo, stack), "repo": repo, "stack": stack,
            "finding_type": finding_type, "kind": kind, "text": text.strip(),
            "evidence": {"seeded": True}, "status": status, "source": "human",
            "locked": bool(locked), "source_prs": [], "created_at": now, "updated_at": now}
@@ -412,11 +417,22 @@ def disable(store, exp_id):
 
 
 # --- 注入：active 经验 → PR-Agent extra_instructions（只建议、不进闸）-------------
+def _resolve_conflicts(active):
+    """同一 仓·栈·发现类型 不能既 emphasize 又 suppress：保留 updated_at 较新的一条（I3）。"""
+    by = {}
+    for e in active:
+        k = (e.get("repo", ""), e.get("stack", ""), e.get("finding_type"))
+        if k not in by or e.get("updated_at", 0) >= by[k].get("updated_at", 0):
+            by[k] = e
+    keep = {id(v) for v in by.values()}
+    return [e for e in active if id(e) in keep]
+
+
 def render_injection(store):
     """把 active 经验渲染成注入 PR-Agent 的 extra_instructions 文本。
     仅 active；candidate/retired 不注入。输出纯指令文本——只影响 PR-Agent 的建议，
     不触碰确定性 contract_check / 总闸（评审与合入闸的边界）。"""
-    active = [e for e in store.get("experiences", []) if e["status"] == "active"]
+    active = _resolve_conflicts([e for e in store.get("experiences", []) if e["status"] == "active"])
     if not active:
         return ""
     lines = ["# Learned review experience (repo-specific, advisory only — do not gate merges):"]
