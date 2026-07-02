@@ -240,8 +240,7 @@ def test_to_rdjson_reviewdog_backend():
 
 
 def test_to_rdjson_shape():
-    from touchstone import orchestrator as O
-    rd = O.to_rdjson([{"rule_id": "SCOPE-001", "file": "a.sql", "line": 3,
+    rd = RP.to_rdjson([{"rule_id": "SCOPE-001", "file": "a.sql", "line": 3,
                        "severity": "block_candidate", "rationale": "超出 scope"},
                       {"rule_id": "PRA-STYLE", "file": "b.py", "severity": "warn"}])
     d = rd["diagnostics"]
