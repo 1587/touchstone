@@ -305,3 +305,18 @@ def test_parse_changed_lines_and_coverage_ratio():
     assert V._coverage_json_line_ratio(cov, {"x.py": {2, 3}}) == 0.5
     assert V._coverage_json_line_ratio(cov, {}) == 1.0          # 无可覆盖行 → 1.0
     assert V._coverage_json_line_ratio({}, {"x.py": {2}}) == 1.0  # 文件缺 → 1.0
+
+
+# ============ 外部变异工具接缝（mutmut/cosmic-ray/PIT）回归 ============
+def test_parse_mutation_output_takes_last_number():
+    import verify_change as V
+    assert V._parse_mutation_output("killed 10/12\nscore: 83%") == 0.83
+    assert V._parse_mutation_output("mutation score 0.6") == 0.6
+    assert V._parse_mutation_output("no numbers here") is None
+
+def test_external_mutation_cmd_used_when_set(monkeypatch, tmp_path):
+    import verify_change as V
+    monkeypatch.setenv("TOUCHSTONE_MUTATION_CMD", "echo killed 3/4 = 75%")
+    assert V.external_mutation_score(str(tmp_path), ["a.py"]) == 0.75
+    monkeypatch.delenv("TOUCHSTONE_MUTATION_CMD")
+    assert V.external_mutation_score(str(tmp_path), ["a.py"]) is None   # 未设 → 回退内置

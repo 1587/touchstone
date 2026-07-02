@@ -157,6 +157,35 @@ def check_base_fresh(repo, pr_number, token, api_url=None, update_if_behind=True
     return False
 
 
+# --- 合并入队（merge queue / auto-merge 原生通道）------------------------------
+def enqueue_auto_merge(repo, pr_number, token, api_url=None, merge_method="SQUASH"):
+    """AUTONOMY_MERGE_MODE=queue：不自己调 merge API，改走 GitHub 原生
+    enablePullRequestAutoMerge（分支保护开 merge queue 时即入队）——排队/批测/跳车由
+    平台承担，不自建 bors。先查 PR node id，再发 mutation。"""
+    api = (api_url or os.environ.get("GITHUB_API_URL", "https://api.github.com")).rstrip("/")
+    gql = api[:-3] + "graphql" if api.endswith("/v3") else api + "/graphql"
+    hdr = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+    owner, name = repo.split("/", 1)
+    def _post(payload):
+        req = urllib.request.Request(gql, data=json.dumps(payload).encode("utf-8"),
+                                     method="POST", headers=hdr)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8"))
+    q = _post({"query": "query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n)"
+                        "{pullRequest(number:$p){id}}}",
+               "variables": {"o": owner, "n": name, "p": int(pr_number)}})
+    node = (((q.get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("id")
+    if not node:
+        raise RuntimeError(f"取 PR node id 失败: {q.get('errors')}")
+    m = _post({"query": "mutation($id:ID!,$m:PullRequestMergeMethod!){"
+                        "enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$m})"
+                        "{pullRequest{autoMergeRequest{enabledAt}}}}",
+               "variables": {"id": node, "m": merge_method}})
+    if m.get("errors"):
+        raise RuntimeError(f"入队失败: {m['errors']}")
+    return m
+
+
 # --- 执行（merge API 集成点；打 auto_handled marker 供校准归因）----------------
 def execute_auto_merge(repo, pr_number, sha, token, api_url=None, merge_method="squash"):
     api = (api_url or os.environ.get("GITHUB_API_URL", "https://api.github.com")).rstrip("/")
@@ -269,8 +298,12 @@ def main():
                             set(d.get("graduated_classes", [])), cls, base_fresh=base_fresh)
     print(json.dumps(dec, ensure_ascii=False))
     if dec["merge"] and args.execute and repo and pr and sha:
-        execute_auto_merge(repo, pr, sha, os.environ["GITHUB_TOKEN"])
-        print("[autonomy] 已自动放行（auto_handled）")
+        if os.environ.get("AUTONOMY_MERGE_MODE", "direct") == "queue":
+            enqueue_auto_merge(repo, pr, os.environ["GITHUB_TOKEN"])
+            print("[autonomy] 已入 merge queue（排队/批测/合并由平台执行）")
+        else:
+            execute_auto_merge(repo, pr, sha, os.environ["GITHUB_TOKEN"])
+            print("[autonomy] 已自动放行（auto_handled）")
 
 
 if __name__ == "__main__":

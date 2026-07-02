@@ -306,3 +306,17 @@ def map_verdict(findings, nmap=None, changed_files=None):
     risk = {"risk_band": band, "blast_radius": blast}
     risk.update(route(risk))          # §4.2 风险分流：人看不看 / 跑哪档验证
     return kept, risk
+
+
+def to_rdjson(findings, source_name="touchstone"):
+    """把发现转成 Reviewdog Diagnostic Format(rdjson)——成熟行内评论后端的接缝：
+    reviewdog 处理行锚定长尾（过滤模式/位置修正），本系统不必自研。纯函数，供导出。"""
+    sev = {"block_candidate": "ERROR", "warn": "WARNING"}
+    return {"source": {"name": source_name},
+            "diagnostics": [{
+                "message": (f.get("rationale") or f.get("rule_id") or ""),
+                "code": {"value": f.get("rule_id") or ""},
+                "location": {"path": f.get("file") or "",
+                             "range": {"start": {"line": int(f.get("line") or 1)}}},
+                "severity": sev.get(f.get("severity"), "INFO"),
+            } for f in (findings or [])]}

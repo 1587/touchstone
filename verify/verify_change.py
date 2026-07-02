@@ -216,6 +216,7 @@ def _changed_file_coverage(work_dir, test_code, changed_files, changed_lines=Non
             os.remove(tf)
 
 
+<<<<<<< HEAD
 # --- AST 级变异（高风险充分性）。返回击杀率。----------------------------------
 # 对标 mutmut/cosmic-ray 的变异算子集（15 类），但用 stdlib ast 直接实现——
 # 原因：mutmut(2.x 要求 tests/ 目录、3.x 配置驱动且有状态)和 cosmic-ray(需 session 配置)
@@ -229,6 +230,43 @@ def _changed_file_coverage(work_dir, test_code, changed_files, changed_lines=Non
 #   布尔：And↔Or
 #   常量：True↔False / int/float ±1
 #   一元：USub↔UAdd / Not→(移除) / Invert→(移除)
+=======
+# --- 最小变异（高风险）。返回击杀率（LANG RUNNER；生产应换 mutmut/cosmic-ray）--
+# AST 级变异（stdlib ast 真解析，作用于语法节点，不碰注释/字符串；远强于字符串替换）：
+#   关系 Eq<->NotEq / Lt<->GtE / Gt<->LtE，算术 Add<->Sub / Mult<->Div，
+#   布尔 And<->Or，布尔常量 True<->False。每个可变异点产一个变异体。
+# 说明：mutmut(2.x 要求 tests/ 目录、3.x 配置驱动且有状态)均跑"发现到的整套测试"，
+#   与本处"临时 worktree + 仅跑生成的独立验收测试 + 只针对改动文件"不贴合；故 Python 侧
+#   用作用域精确、可在离线验证的 AST 变异。Java 侧用成熟的 PIT(见 MavenRunner)。
+def _parse_mutation_output(out):
+    """从外部变异工具输出的【最后一个】形如 0.83 / 83% 的数取击杀率（0~1）；解析不出返回 None。"""
+    import re as _re
+    m = _re.findall(r"(\d+(?:\.\d+)?)\s*%|(?<![\d.])(0?\.\d+|1\.0|0|1)(?![\d.])", out or "")
+    for pct, frac in reversed(m):
+        if pct:
+            return min(1.0, float(pct) / 100.0)
+        if frac:
+            return float(frac)
+    return None
+
+
+def external_mutation_score(work_dir, changed_files):
+    """成熟工具接缝（对照 mutmut/cosmic-ray/PIT）：设 TOUCHSTONE_MUTATION_CMD 时改用外部命令
+    算击杀率——命令在 work_dir 运行，{files} 占位替换为改动文件列表，stdout 里最后一个
+    百分数/小数被当作击杀率。未设、命令失败或解析不出 → 返回 None，回退内置 AST 变异。"""
+    cmd = os.environ.get("TOUCHSTONE_MUTATION_CMD")
+    if not cmd:
+        return None
+    try:
+        full = cmd.replace("{files}", " ".join(changed_files or []))
+        r = subprocess.run(full, shell=True, cwd=work_dir, capture_output=True,
+                           text=True, timeout=int(os.environ.get("TOUCHSTONE_MUTATION_TIMEOUT", "900")))
+        return _parse_mutation_output(r.stdout)
+    except Exception:
+        return None
+
+
+>>>>>>> integrate mature-tool seams: external mutation runner, reviewdog rdjson export, merge-queue mode
 _MUT_CMP = {ast.Eq: ast.NotEq, ast.NotEq: ast.Eq, ast.Lt: ast.GtE,
             ast.GtE: ast.Lt, ast.Gt: ast.LtE, ast.LtE: ast.Gt,
             ast.Is: ast.IsNot, ast.IsNot: ast.Is, ast.In: ast.NotIn, ast.NotIn: ast.In}
@@ -342,6 +380,9 @@ class PythonRunner:
         return _suite_coverage_python(work_dir, changed_files, changed_lines)
 
     def mutation(self, work_dir, changed_files, test_code=None):
+        ext = external_mutation_score(work_dir, changed_files)
+        if ext is not None:
+            return ext
         return _mutation_check(work_dir, test_code, changed_files) if test_code else None
 
     def extract_interface(self, work_dir, changed_files):

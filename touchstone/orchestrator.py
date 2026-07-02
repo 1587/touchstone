@@ -278,6 +278,11 @@ def main():
     except Exception:
         injected_types, injected_experience_ids = [], []
 
+    rd_path = os.environ.get("TOUCHSTONE_RDJSON_PATH")
+    if rd_path:      # 可选：导出 rdjson，行内评论交 reviewdog（成熟锚定后端）
+        with open(rd_path, "w", encoding="utf-8") as _f:
+            json.dump(review_provider.to_rdjson(findings), _f, ensure_ascii=False)
+
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
                  injected_types=injected_types, injected_experience_ids=injected_experience_ids)
 

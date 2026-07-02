@@ -226,3 +226,14 @@ def test_llm_missed_category_still_elevated_by_path():
     assert risk1["risk_band"] == "high"
     assert "cross_module_contract" in risk1["blast_radius"]
     assert risk1["verification_decision"] == "full_suite"
+
+
+def test_to_rdjson_reviewdog_backend():
+    """rdjson 导出：行内评论可交 reviewdog（成熟锚定后端），severity 正确映射。"""
+    from touchstone import review_provider as rp
+    d = rp.to_rdjson([{"rule_id": "SCOPE-001", "file": "m.sql", "line": 1,
+                       "severity": "block_candidate", "rationale": "超出 scope"}])
+    diag = d["diagnostics"][0]
+    assert d["source"]["name"] == "touchstone"
+    assert diag["severity"] == "ERROR" and diag["location"]["path"] == "m.sql"
+    assert diag["code"]["value"] == "SCOPE-001"
