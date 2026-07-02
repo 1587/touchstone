@@ -57,11 +57,12 @@ jobs:
           if-no-files-found: ignore
 
   # ---- 可选深检：verify（默认关；vars.VERIFY_ENABLED=='true' 且风险分流判为需验证时才跑）----
+  # ⚠ 安全风险（详见 docs/touchstone-design.html §6.6）：
+  #   verify 在 worktree 里执行 PR 代码（pytest/mvn），pull_request_target 持密上下文
+  #   → PR 代码可读 env 里的 LLM 凭据。VERIFY_ENABLED 开启前必须实施 §6.6 的隔离方案之一
+  #   （Environments 隔离 / 拆 pull_request 事件 / self-hosted runner 容器）。
+  #   当前缓解：GITHUB_TOKEN 已去掉（verify 不需要它）；但 LLM 凭据仍在 env（verify 需要）。
   # 结果写 verify-result.json，由 gate job 经 verify 插件折进总闸。
-  # P1-b 安全：verify 在 worktree 里执行 PR 代码（pytest/mvn），是最危险的 secret 暴露面。
-  # pull_request_target 给了 base 上下文 + secrets，但 verify 跑的是 PR head 代码。
-  # 最小风险化：去掉 GITHUB_TOKEN（verify 不需要它——只写 artifact，不发 API）。
-  # 生产建议：verify 改用 pull_request 事件（无 secrets）+ 跑在隔离 runner/容器。
   verify:
     needs: touchstone
     if: ${{ vars.VERIFY_ENABLED == 'true' && (needs.touchstone.outputs.decision == 'targeted_tests' || needs.touchstone.outputs.decision == 'full_suite') }}
