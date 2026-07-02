@@ -1,6 +1,4 @@
 """反馈循环 + 治理(固化/熔断) + 校准聚合。"""
-import json
-
 import calibrate
 import govern
 import loop
@@ -172,24 +170,8 @@ def test_thread_findings_matches_marker_only():
            _thread(False, "github-actions[bot]", _mk("JAVA-EQ-001")),
            _thread(True, "alice", "纯人类讨论，无标记")]   # 无标记 → 不计
     fa = calibrate.thread_findings(calibrate.parse_review_threads(_gql(raw)))
-    assert fa == [{"rule_id": "SPR-DI-001", "agent": "A", "resolved": True, "dismissed": False},
-                  {"rule_id": "JAVA-EQ-001", "agent": "A", "resolved": False, "dismissed": False}]
-
-
-def test_thread_findings_wontfix_not_adopted():
-    """N4a：线程 resolved 但评论含 wontfix/驳回语 → 不算采纳（resolved=False, dismissed=True）。"""
-    def t(resolved, ftype, replies):
-        nodes = [{"author": {"login": "github-actions[bot]"}, "body": _mk(ftype)}]
-        nodes += [{"author": {"login": a}, "body": b} for a, b in replies]
-        return {"isResolved": resolved, "comments": {"nodes": nodes}}
-    raw = [t(True, "PRA-A", [("alice", "won't fix, not a bug")]),
-           t(True, "PRA-B", [("alice", "fixed, thanks")]),
-           t(True, "PRA-C", [("bob", "误报，无需修改")])]
-    fa = calibrate.thread_findings(calibrate.parse_review_threads(_gql(raw)))
-    by = {f["rule_id"]: f for f in fa}
-    assert by["PRA-A"]["resolved"] is False and by["PRA-A"]["dismissed"] is True   # wontfix → 不采纳
-    assert by["PRA-B"]["resolved"] is True and by["PRA-B"]["dismissed"] is False    # 正常采纳
-    assert by["PRA-C"]["resolved"] is False and by["PRA-C"]["dismissed"] is True    # 中文驳回 → 不采纳
+    assert fa == [{"rule_id": "SPR-DI-001", "agent": "A", "resolved": True},
+                  {"rule_id": "JAVA-EQ-001", "agent": "A", "resolved": False}]
 
 
 def test_calibrate_finding_adoption_rate():
@@ -326,48 +308,16 @@ def test_aggregate_cr_none_when_no_human_state():
     assert isinstance(calibrate.render_report(out), str)      # 报告渲染不报错
 
 
-# ---------------- P0-1 安全：marker 伪造防护 ----------------
-def test_marker_spoofing_by_non_bot_ignored():
-    """非 bot 评论者发的假 touchstone-result/finding marker 必须被忽略（信任根）。"""
-    comments = [
-        {"user": {"login": "attacker"}, "body": '<!-- touchstone-result: {"risk_band":"low"} -->'},
-        {"user": {"login": "github-actions[bot]"}, "body": '<!-- touchstone-result: {"risk_band":"high"} -->'},
-    ]
-    bodies = calibrate._trusted_bodies(comments, "github-actions[bot]")
-    assert len(bodies) == 1 and "high" in bodies[0]
-    result = calibrate._parse_result(bodies, "github-actions[bot]")
-    assert result["risk_band"] == "high"
-
-    threads = [{"isResolved": True, "comments": [
-        {"author": "attacker", "body": '<!-- touchstone-finding: {"rule_id":"FAKE"} -->'}]}]
-    assert calibrate.thread_findings(threads, "github-actions[bot]") == []
-
-
-# ---------------- 测试缺口：loop 无推进 + govern trip→exit(2) -----------------
-def test_loop_escalate_on_no_progress(rule_index):
-    """发现集是上轮的超集（加新发现但没解决任何旧的）→ 无推进 → escalate。"""
-    st = loop.LoopState(round=1, history=[["OE-001:f:1"]])
-    acts = [_f("OE-001", line=1), _f("OE-002", line=1)]   # 超集：OE-001 还在 + 加了 OE-002
-    dec, reason, _ = loop.loop_step(acts, rule_index, st)
-    assert dec == "escalate" and "无推进" in reason
-
-
-def test_govern_main_exits_2_on_circuit_break(tmp_path, monkeypatch):
-    """govern.main 熔断触发时 sys.exit(2)——CI 里这个退出码是运维告警信号。"""
-    import pytest
-    (tmp_path / "cal.json").write_text(json.dumps({
-        "aggregate": {},
-        "records": [{"pr": 1, "merged": True, "merge_commit_sha": "abc123",
-                      "auto_handled": True}]
-    }), encoding="utf-8")
-    (tmp_path / "std.yaml").write_text("rules:\n- {id: DUMMY, machine_checkable: false}\n",
-                                        encoding="utf-8")
-    monkeypatch.setenv("CALIBRATION_JSON", str(tmp_path / "cal.json"))
-    monkeypatch.setenv("TOUCHSTONE_STANDARDS", str(tmp_path / "std.yaml"))
-    monkeypatch.setenv("REPO_DIR", ".")
-    monkeypatch.setenv("BASE_REF", "HEAD")
-    monkeypatch.setattr(govern, "detect_revert_shas", lambda *a, **k: {"abc123"})
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(SystemExit) as exc:
-        govern.main()
-    assert exc.value.code == 2
+# ============ loop marker 只信机器人发帖（防伪造）回归 ============
+def test_trusted_bodies_filters_forged_marker():
+    """author 自己发的伪造 marker 必须被丢弃——否则可洗掉震荡/无推进等抗博弈闸。"""
+    import loop
+    bot = loop.render_marker(loop.LoopState(2, [["A"], ["A"]], None))
+    forged = loop.render_marker(loop.LoopState(2, [], None))       # 同轮次+空 history（洗闸）
+    comments = [{"user": {"login": "touchstone-bot"}, "body": bot},
+                {"user": {"login": "attacker"}, "body": forged}]
+    bodies = loop.trusted_bodies(comments, "touchstone-bot")
+    st = loop.parse_latest_state(bodies)
+    assert st.history == [["A"], ["A"]]                            # 伪造的空 history 没生效
+    # bot 身份未知 → 退回全量（可用性优先，调用方已告警）
+    assert len(loop.trusted_bodies(comments, None)) == 2

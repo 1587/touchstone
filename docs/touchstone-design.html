@@ -594,6 +594,7 @@ gate:
 checks:
   - {name: touchstone-rules, type: builtin, plugin: touchstone-rules, required: true}
   - {name: unit-tests,      type: relay,   source_check: unit, required: true}     <span class="cm"># 转达现有单测</span>
+  <span class="cm"># required 的 relay 为 fail-closed：源检查 skipped/neutral 不算过（防 [skip ci]/路径过滤绕总闸）；确需放宽对该检查设 allow_skipped: true</span>
   - {name: sonarqube,       type: relay,   source_check: SonarQube, required: false, enabled: false}
   - {name: verify,          type: builtin, plugin: verify, required: false, enabled: false} <span class="cm"># 算力够时人开</span>
   - {name: my-service,      type: service, url: "http://internal/check", enabled: false}     <span class="cm"># 未来自建服务挂点</span></pre>
@@ -620,6 +621,7 @@ checks:
       <tr><td>提交契约缺失/不合格</td><td>视为不可评审，直接打回 author（不消耗 Touchstone）</td></tr>
       <tr><td>确定性门禁红</td><td>直接打回，AI 审都不上场</td></tr>
       <tr><td>反馈循环超轮次 / 反复矛盾</td><td>升级到人仲裁或要求 re-plan</td></tr>
+      <tr><td>PR 评论中出现伪造的 loop marker</td><td>loop 状态只从【机器人自己】发的评论解析（按发帖人过滤，<code>loop.trusted_bodies</code>）；身份无法确认时降级为全量并告警</td></tr>
       <tr><td>Touchstone 批准率突升</td><td>熔断告警，疑似把关变松/被钻空子</td></tr>
       <tr><td>合入后事故率越阈值</td><td>熔断收回自主权，全部回落到人</td></tr>
     </table>

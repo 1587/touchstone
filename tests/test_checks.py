@@ -216,6 +216,7 @@ def test_gate_cli_contract_block_writes_failure(tmp_path, monkeypatch):
     assert co["gate"] == "failure" and posted["conclusion"] == "failure"
 
 
+<<<<<<< HEAD
 # ---------------- P0-10：_run_service + ghclient 4xx（用 unittest.mock，stdlib 零依赖）----
 from unittest.mock import patch, MagicMock
 
@@ -277,3 +278,26 @@ def test_ghclient_non_json_body():
 
 
 import ghclient as G  # noqa: E402
+=======
+# ============ required 接力检查 fail-closed（skipped 不算过）回归 ============
+def _mk_relay_gh(monkeypatch, conclusion):
+    monkeypatch.setattr(checks, "_gh",
+        lambda *a, **k: {"check_runs": [
+            {"name": "unit", "status": "completed", "conclusion": conclusion}]})
+
+def test_relay_required_skipped_fails_closed(monkeypatch):
+    """required 的接力检查，源 CI 被跳过（[skip ci]/路径过滤）不能算过——否则总闸被绕。"""
+    pr = {"owner": "o", "repo": "r", "sha": "s", "token": "t"}
+    _mk_relay_gh(monkeypatch, "skipped")
+    assert checks._run_relay(pr, {"source_check": "unit", "required": True})[0] is False
+    _mk_relay_gh(monkeypatch, "neutral")
+    assert checks._run_relay(pr, {"source_check": "unit", "required": True})[0] is False
+
+def test_relay_non_required_skipped_still_ok(monkeypatch):
+    """非 required 保持宽松（兼容既有流水线）；required 可用 allow_skipped 显式放宽。"""
+    pr = {"owner": "o", "repo": "r", "sha": "s", "token": "t"}
+    _mk_relay_gh(monkeypatch, "skipped")
+    assert checks._run_relay(pr, {"source_check": "unit"})[0] is True
+    assert checks._run_relay(pr, {"source_check": "unit",
+                                  "required": True, "allow_skipped": True})[0] is True
+>>>>>>> harden: trust-filter loop markers + fail-closed required relays

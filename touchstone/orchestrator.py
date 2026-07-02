@@ -244,10 +244,18 @@ def main():
     _out = review_pr(pr_ctx_review, contract, standards)
     findings, risk = _out["findings"], _out["risk"]
 
-    # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker（author 无法篡改轮次）
+    # 反馈循环：从历史评论 marker 取状态 → 决策 → 回贴附状态与新 marker。
+    # 只信机器人自己发的评论（按发帖人过滤）——否则 author 可自己发伪造 marker 洗掉抗博弈闸。
     try:
         comments = gh("GET", f"/repos/{owner}/{repo}/issues/{number}/comments", token)
-        bodies = [c.get("body", "") for c in comments] if isinstance(comments, list) else []
+        comments = comments if isinstance(comments, list) else []
+        try:
+            bot_login = (gh("GET", "/user", token) or {}).get("login")
+        except (urllib.error.HTTPError, requests.exceptions.RequestException):
+            bot_login = None
+        if not bot_login:
+            print("[warn] 无法确认机器人身份，loop marker 未按发帖人过滤（伪造防护降级）", file=sys.stderr)
+        bodies = loop.trusted_bodies(comments, bot_login)
     except (urllib.error.HTTPError, requests.exceptions.RequestException):
         bodies = []
     state = loop.parse_latest_state(bodies)
