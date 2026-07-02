@@ -133,6 +133,8 @@ def check_untested_code(files, rule_index):
 
 
 # --- SEC-001：硬编码密钥/凭据（离线、确定性正则扫描）----------------------------
+# 规则集【冻结】：只作离线兜底，不再新增模式——沿此路线扩张终点是维护一个更差的
+# gitleaks。完整密钥扫描请经 checks.yaml 的 relay 检查挂 gitleaks/semgrep（见主设计 §4.7）。
 # 高精度特征串（已知格式的云/Git 凭据 + PEM 私钥头 + 通用凭据赋值）。
 # SEC-002（SQL/命令注入）是污点分析、需外部 SAST 数据流，不在此——经 checks.yaml relay 接入。
 _SECRET_PATTERNS = [

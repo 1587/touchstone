@@ -13,6 +13,7 @@
 
 import json
 import os
+import sys
 import urllib.request
 
 
@@ -85,7 +86,7 @@ def graduate_classes(experience, min_samples=None, max_bad_rate=None):
 # --- 自动放行判据（可选路径，默认关）------------------------------------------
 def decide_auto_merge(risk, findings, loop_decision, gate,
                       autonomy_state, graduated_classes, cls,
-                      enabled=None, shadow=None):
+                      enabled=None, shadow=None, base_fresh=None):
     enabled = AUTONOMY_ENABLED if enabled is None else enabled
     shadow = AUTONOMY_SHADOW if shadow is None else shadow
     # 阻断否决（不再是委员会）：high 风险档或任一幸存 block_candidate 发现 → 否决（能拦、不能批）
@@ -98,6 +99,10 @@ def decide_auto_merge(risk, findings, loop_decision, gate,
         "loop_converged": loop_decision == "converged",
         "not_tripped": not (autonomy_state or {}).get("tripped"),
         "class_graduated": cls in (graduated_classes or set()),
+        # 第七道闸·基线新鲜度（bors「not rocket science」规则）：CI 绿是对旧 main 算的，
+        # 直接合可能引入语义冲突（两个 PR 各自绿、合在一起坏）。base_fresh=False（已确认
+        # 基线过期）→ 拒绝放行、先带上最新 main 重跑；None（未评估，如纯离线决策/测试）→ 不拦。
+        "base_fresh": base_fresh is not False,
     }
     base = {"checks": checks, "change_class": cls,
             "failed": [k for k, v in checks.items() if not v]}
@@ -111,6 +116,45 @@ def decide_auto_merge(risk, findings, loop_decision, gate,
         return {"merge": False, "mode": "shadow", "would_merge": True,
                 "reason": "影子模式：各闸通过，本会自动放行（未执行，记证据）", **base}
     return {"merge": True, "mode": "live", "reason": "各闸通过 → 自动放行", **base}
+
+
+# --- 基线新鲜度（merge skew 防护）--------------------------------------------
+def is_base_fresh(pr_data, base_branch_head_sha):
+    """纯判定：PR 的 base sha 是否就是 base 分支当前 head（即 CI 结论是对最新基线算的）。"""
+    pr_base = ((pr_data or {}).get("base") or {}).get("sha")
+    return bool(pr_base) and bool(base_branch_head_sha) and pr_base == base_branch_head_sha
+
+
+def check_base_fresh(repo, pr_number, token, api_url=None, update_if_behind=True):
+    """取 PR 与 base 分支现状判基线新鲜度；过期且 update_if_behind 时调 GitHub
+    update-branch API 把最新 base 合进 PR 分支（触发 CI 重跑），本轮返回 False 等下轮再判。
+    任一 API 失败 → 返回 None（未评估，不据此拦；对应闸的 fail-open 仅限『评不了』，评出过期必拦）。"""
+    api = (api_url or os.environ.get("GITHUB_API_URL", "https://api.github.com")).rstrip("/")
+    hdr = {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"}
+    def _get(path):
+        req = urllib.request.Request(api + path, headers=hdr)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8"))
+    try:
+        prd = _get(f"/repos/{repo}/pulls/{pr_number}")
+        base_ref = ((prd.get("base") or {}).get("ref")) or "main"
+        head = _get(f"/repos/{repo}/commits/{base_ref}").get("sha")
+    except Exception as e:
+        print(f"[autonomy] 基线新鲜度评估失败（不据此拦）: {e}", file=sys.stderr)
+        return None
+    if is_base_fresh(prd, head):
+        return True
+    if update_if_behind:
+        try:
+            req = urllib.request.Request(
+                api + f"/repos/{repo}/pulls/{pr_number}/update-branch",
+                data=b"{}", method="PUT",
+                headers={**hdr, "Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=30)
+            print("[autonomy] 基线过期：已请求 update-branch，等 CI 重绿后下轮再判", file=sys.stderr)
+        except Exception as e:
+            print(f"[autonomy] update-branch 失败（仍拒放行）: {e}", file=sys.stderr)
+    return False
 
 
 # --- 执行（merge API 集成点；打 auto_handled marker 供校准归因）----------------
@@ -217,9 +261,12 @@ def main():
         repo = os.environ.get("GITHUB_REPOSITORY")
         pr, sha = co.get("pr"), co.get("sha")
 
+    base_fresh = None
+    if args.execute and repo and pr and os.environ.get("GITHUB_TOKEN"):
+        base_fresh = check_base_fresh(repo, pr, os.environ["GITHUB_TOKEN"])
     dec = decide_auto_merge(d.get("risk", {}), d.get("findings", []), d.get("loop_decision"),
                             d.get("gate"), d.get("autonomy_state"),
-                            set(d.get("graduated_classes", [])), cls)
+                            set(d.get("graduated_classes", [])), cls, base_fresh=base_fresh)
     print(json.dumps(dec, ensure_ascii=False))
     if dec["merge"] and args.execute and repo and pr and sha:
         execute_auto_merge(repo, pr, sha, os.environ["GITHUB_TOKEN"])
