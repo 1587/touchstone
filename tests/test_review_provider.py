@@ -237,3 +237,14 @@ def test_to_rdjson_reviewdog_backend():
     assert d["source"]["name"] == "touchstone"
     assert diag["severity"] == "ERROR" and diag["location"]["path"] == "m.sql"
     assert diag["code"]["value"] == "SCOPE-001"
+
+
+def test_to_rdjson_shape():
+    from touchstone import orchestrator as O
+    rd = O.to_rdjson([{"rule_id": "SCOPE-001", "file": "a.sql", "line": 3,
+                       "severity": "block_candidate", "rationale": "超出 scope"},
+                      {"rule_id": "PRA-STYLE", "file": "b.py", "severity": "warn"}])
+    d = rd["diagnostics"]
+    assert rd["source"]["name"] == "touchstone" and len(d) == 2
+    assert d[0]["severity"] == "ERROR" and d[0]["location"]["range"]["start"]["line"] == 3
+    assert d[1]["severity"] == "WARNING" and d[1]["location"]["range"]["start"]["line"] == 1

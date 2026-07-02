@@ -158,6 +158,13 @@ def check_base_fresh(repo, pr_number, token, api_url=None, update_if_behind=True
 
 
 # --- 合并入队（merge queue / auto-merge 原生通道）------------------------------
+def _gql_post(url, headers, payload):
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                 method="POST", headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
 def enqueue_auto_merge(repo, pr_number, token, api_url=None, merge_method="SQUASH"):
     """AUTONOMY_MERGE_MODE=queue：不自己调 merge API，改走 GitHub 原生
     enablePullRequestAutoMerge（分支保护开 merge queue 时即入队）——排队/批测/跳车由
@@ -167,10 +174,7 @@ def enqueue_auto_merge(repo, pr_number, token, api_url=None, merge_method="SQUAS
     hdr = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
     owner, name = repo.split("/", 1)
     def _post(payload):
-        req = urllib.request.Request(gql, data=json.dumps(payload).encode("utf-8"),
-                                     method="POST", headers=hdr)
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read().decode("utf-8"))
+        return _gql_post(gql, hdr, payload)
     q = _post({"query": "query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n)"
                         "{pullRequest(number:$p){id}}}",
                "variables": {"o": owner, "n": name, "p": int(pr_number)}})
@@ -184,6 +188,7 @@ def enqueue_auto_merge(repo, pr_number, token, api_url=None, merge_method="SQUAS
     if m.get("errors"):
         raise RuntimeError(f"入队失败: {m['errors']}")
     return m
+
 
 
 # --- 执行（merge API 集成点；打 auto_handled marker 供校准归因）----------------

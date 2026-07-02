@@ -138,6 +138,22 @@ def ci_verdict(owner, repo, head_sha, token):
     return True
 
 
+def to_rdjson(findings):
+    """把发现转成 reviewdog 的 RDFormat(JSON)——可选后端：行内评论也可交 reviewdog 投递
+    （其锚定/过滤模式经多年打磨），本系统不再自扩锚定长尾。block_candidate→ERROR，其余 WARNING。"""
+    diags = []
+    for f in findings or []:
+        diags.append({
+            "message": f.get("rationale") or f.get("rule_id") or "",
+            "location": {"path": f.get("file") or "",
+                         "range": {"start": {"line": int(f.get("line") or 1)}}},
+            "severity": "ERROR" if f.get("severity") == "block_candidate" else "WARNING",
+            "code": {"value": f.get("rule_id") or ""},
+        })
+    return {"source": {"name": "touchstone", "url": "https://github.com/AKDI-SE/touchstone"},
+            "diagnostics": diags}
+
+
 def post_results(owner, repo, number, head_sha, token, risk, findings, loop_info=None,
                  change_class=None, diff=None, injected_types=None, injected_experience_ids=None):
     # (1) 摘要评论——总是成功；顶部附反馈循环状态，底部附隐藏 state marker
@@ -279,9 +295,12 @@ def main():
         injected_types, injected_experience_ids = [], []
 
     rd_path = os.environ.get("TOUCHSTONE_RDJSON_PATH")
-    if rd_path:      # 可选：导出 rdjson，行内评论交 reviewdog（成熟锚定后端）
-        with open(rd_path, "w", encoding="utf-8") as _f:
-            json.dump(review_provider.to_rdjson(findings), _f, ensure_ascii=False)
+    if rd_path:                       # 可选 reviewdog 后端：导出 RDFormat，行内投递交 reviewdog
+        try:
+            with open(rd_path, "w", encoding="utf-8") as _rf:
+                json.dump(to_rdjson(findings), _rf, ensure_ascii=False)
+        except OSError as e:
+            print(f"[warn] RDJSON 写出失败: {e}", file=sys.stderr)
 
     post_results(owner, repo, number, head_sha, token, risk, findings, loop_info, cls, diff,
                  injected_types=injected_types, injected_experience_ids=injected_experience_ids)

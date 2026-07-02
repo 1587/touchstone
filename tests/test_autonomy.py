@@ -239,3 +239,18 @@ def test_is_base_fresh_pure_compare():
     assert A.is_base_fresh({"base": {"sha": "abc"}}, "abc") is True
     assert A.is_base_fresh({"base": {"sha": "abc"}}, "def") is False       # main 已前进 → 过期
     assert A.is_base_fresh({}, "abc") is False                             # 数据缺失 → 不算新鲜
+
+
+def test_enqueue_auto_merge_uses_graphql_queue(monkeypatch):
+    """queue 模式：GraphQL 取 node id → enablePullRequestAutoMerge，排队/批测交给平台。"""
+    import autonomy as A
+    calls = []
+    def fake(url, headers, payload):
+        calls.append(payload["query"][:30])
+        if "enablePullRequestAutoMerge" in payload["query"]:
+            assert payload["variables"]["id"] == "NODE1"
+            return {"data": {"enablePullRequestAutoMerge": {}}}
+        return {"data": {"repository": {"pullRequest": {"id": "NODE1"}}}}
+    monkeypatch.setattr(A, "_gql_post", fake)
+    A.enqueue_auto_merge("o/r", 7, "tok")
+    assert len(calls) == 2 and "mutation" in calls[1]
