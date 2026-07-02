@@ -748,6 +748,27 @@ checks:
       <li><strong>层次一致性</strong>：测试作者 ≠ 代码作者；Touchstone 对测试集无写权——评判者与被评判者分离。</li>
       <li><strong>有意接受的遗留</strong>：① <strong>规格本身的正确性是人的职责</strong>——独立验收测试只能让测试忠于规格，规格错则测试错；本子系统建立在「人事前写对 acceptance_criteria」之上（即人被前移的角色）。② 变异验证贵且可能有等价变异噪声 → 风险门控、不全量跑。③ 规格未预见的 unknown-unknowns 任何测试体系都覆盖不到 → 由熔断（合入后 revert/hotfix）保障。</li>
     </ul>
+
+    <h3>6.6 安全风险：verify 执行 PR 代码（VERIFY_ENABLED 开启前必读）</h3>
+    <div class="principle warn"><span class="k">⚠ P1-b：verify 在持密上下文里执行 PR 代码——是整个系统最危险的 secret 暴露面</span>
+    <p><strong>问题。</strong>Touchstone 的 <code>touchstone.yml</code> 用 <code>pull_request_target</code> 事件（为了有 GITHUB_TOKEN 回贴评论/发 check-run）。<code>pull_request_target</code> 在<strong> base 分支上下文</strong>运行——<strong>所有 secrets 都可用</strong>。</p>
+    <p>但 verify job 做的事是：<strong>物化 PR head 代码（git worktree）→ 执行它（pytest / mvn verify）</strong>。PR 的 <code>conftest.py</code>、被测代码本身——全都能执行任意 Python/Java：<code>os.environ.get("LLM_API_KEY")</code> → 外传。</p>
+    <p><strong>攻击链。</strong>fork 仓库 → PR 代码植入窃取 → <code>VERIFY_ENABLED=true</code> → verify 跑 → PR 代码读 env → 拿到 LLM 凭据 → 外传。这是 <code>pull_request_target</code> + 执行未信任代码的最危险组合（GitHub 官方多次警告此模式）。</p></div>
+    <div class="principle"><span class="k">当前缓解（已实施）</span>
+    ① verify job 的 <code>GITHUB_TOKEN</code> 已去掉（verify 不发 API，只写 artifact）。<br>
+    ② <code>VERIFY_ENABLED</code> <strong>默认关</strong>——不开启则攻击不存在。<br>
+    ③ verify 需要的 <code>LLM_BASE_URL</code> / <code>LLM_API_KEY</code> 仍在 env 里——去掉则 verify 无法工作。所以 PR 代码<strong>仍能窃取 LLM 凭据</strong>。这是缓解，不是解决。</div>
+    <div class="principle"><span class="k">最终解法（VERIFY_ENABLED 开启前必须实施其一）</span>
+    <strong>方案 A（推荐）：GitHub Environments 隔离。</strong>给 verify job 指定一个不挂任何 secret 的 environment（<code>environment: verify-sandbox</code>），LLM 凭据经 OIDC 换短期令牌或 self-hosted runner 容器隔离。<br>
+    <strong>方案 B（最彻底）：拆事件。</strong>verify job 改用 <code>pull_request</code> 事件（无 secrets）→ PR 代码在无 secret 的上下文执行 → 结果写 artifact → <code>pull_request_target</code> 的 gate job 下载 artifact 折进总闸回贴。代价：fork PR 的 check-run 不显示在 PR 页（需 <code>workflow_run</code> 回填）。<br>
+    <strong>方案 C（大企业）：self-hosted runner + 容器。</strong>verify 跑在一次性容器里，env 物理隔离。</div>
+    <table class="tbl">
+      <tr><th>方案</th><th>安全性</th><th>改动量</th><th>适用</th></tr>
+      <tr><td class="mono">现状（默认关）</td><td>不暴露</td><td>—</td><td>VERIFY_ENABLED 关</td></tr>
+      <tr><td class="mono">A: Environments</td><td>隔离 secrets</td><td>中（仓库配置）</td><td>推荐</td></tr>
+      <tr><td class="mono">B: 拆事件</td><td>彻底隔离</td><td>大（双 workflow + 回贴）</td><td>最彻底</td></tr>
+      <tr><td class="mono">C: 容器</td><td>物理隔离</td><td>大（运维）</td><td>大企业</td></tr>
+    </table>
   </div>
 </section>
 
